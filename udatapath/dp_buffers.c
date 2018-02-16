@@ -149,6 +149,8 @@ dp_buffers_retrieve(struct dp_buffers *dpb, uint32_t id) {
     struct packet_buffer *p;
 
     p = &dpb->buffers[id & PKT_BUFFER_MASK];
+    VLOG_WARN_RL(LOG_MODULE, &rl, "cookie mismatch: %x != %x and packet is %p\n",
+                 id >> PKT_BUFFER_BITS, p->cookie, p->pkt);
     if (p->cookie == id >> PKT_BUFFER_BITS && p->pkt != NULL) {
         pkt = p->pkt;
         pkt->buffer_id = NO_BUFFER;

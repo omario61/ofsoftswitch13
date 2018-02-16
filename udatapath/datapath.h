@@ -55,6 +55,13 @@
 #include "list.h"
 
 
+// Added state for using bloom filters.
+extern uint32_t filter_size;
+extern uint32_t filter_num;
+extern uint32_t *seed ;
+extern uint32_t local_to_global [];
+
+
 struct rconn;
 struct pvconn;
 struct sender;

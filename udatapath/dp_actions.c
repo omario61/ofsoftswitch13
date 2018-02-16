@@ -30,7 +30,7 @@
  * ofss switch https://github.com/TrafficLab/ofss.
  * Credits: Zoltán Lajos Kis
  */
-
+#include "lib/murmurhash.h"
 #include <netinet/in.h>
 #include "csum.h"
 #include "dp_exp.h"
@@ -47,6 +47,7 @@
 #include "util.h"
 #include "oflib/oxm-match.h"
 #include "hash.h"
+
 
 #define LOG_MODULE VLM_dp_acts
 
@@ -743,40 +744,218 @@ push_mpls(struct packet *pkt, struct ofl_action_push *act) {
 }
 
 /* Executes pop mpls action. */
+//static void
+//pop_mpls(struct packet *pkt, struct ofl_action_pop_mpls *act) {
+//    packet_handle_std_validate(pkt->handle_std);
+//    if (pkt->handle_std->proto->eth != NULL && pkt->handle_std->proto->mpls != NULL) {
+//        struct eth_header *eth = pkt->handle_std->proto->eth;
+//        struct snap_header *snap = pkt->handle_std->proto->eth_snap;
+//        struct vlan_header *vlan_last = pkt->handle_std->proto->vlan_last;
+//        struct mpls_header *mpls = pkt->handle_std->proto->mpls;
+//        struct ip_header *ipv4 = pkt->handle_std->proto->ipv4;
+//        size_t move_size;
+//        uint32_t label;
+//        void *mpls_data;
+//
+//
+//        if (ipv4 == NULL){
+//            VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and IPV4 is NULL !!!");
+//        } else {
+//            move_size = (uint8_t *)ipv4 - (uint8_t *)mpls;
+//            mpls_data = xmalloc(move_size);
+//            memcpy(mpls_data, mpls, move_size);
+//            memcpy(&label, mpls_data, MPLS_HEADER_LEN);
+//            label = ntohl(label) >> MPLS_LABEL_SHIFT;
+//            VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and IPV4=%x move_size=%lu label=%x !!!", ipv4->ip_dst, move_size,label);
+//
+//            mpls_data = (uint8_t *)mpls_data + MPLS_HEADER_LEN;
+//            memcpy(&label, mpls_data, MPLS_HEADER_LEN);
+//            label = ntohl(label) >> MPLS_LABEL_SHIFT;
+//            VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and IPV4=%x label=%x !!!", ipv4->ip_dst, label);
+//        }
+//
+//        if (vlan_last != NULL) {
+//            vlan_last->vlan_next_type = htons(act->ethertype);
+//        } else if (snap != NULL) {
+//            snap->snap_type = htons(act->ethertype);
+//        } else {
+//            eth->eth_type = htons(act->ethertype);
+//        }
+//
+//        move_size = (uint8_t *)mpls - (uint8_t *)eth;
+//
+//        pkt->buffer->data = (uint8_t *)pkt->buffer->data + MPLS_HEADER_LEN;
+//        pkt->buffer->size -= MPLS_HEADER_LEN;
+//
+//        memmove(pkt->buffer->data, eth, move_size);
+//
+//        if (snap != NULL) {
+//            struct eth_header *new_eth = (struct eth_header *)(pkt->buffer->data);
+//            new_eth->eth_type = htons(ntohs(new_eth->eth_type) + MPLS_HEADER_LEN);
+//        }
+//
+//        //TODO Zoltan: revalidating might not be necessary at all cases
+//        pkt->handle_std->valid = false;
+//    } else {
+//        VLOG_WARN_RL(LOG_MODULE, &rl, "Trying to execute POP_MPLS action on packet with no eth/mpls.");
+//    }
+//
+//}
+/* Utility function for mapping port_no to global link_id*/
+static uint32_t
+map_port_to_global_id(uint32_t port_no){
+    return local_to_global[port_no];
+}
+
+/*Map session to group_Id*/
+static uint32_t
+map_session_to_group(uint32_t session){
+    return ((session >> 24) & 0xFF) + MULTICAST_SESSION_OFFSET;
+}
+
+/*check if the link in false positive or not*/
+static bool
+is_false_positive(uint32_t port_no, struct packet *pkt, struct ip_header *ipv4){
+    //TODO check false positive checking
+    struct group_entry *entry;
+    size_t i;
+    uint32_t group_id;
+    group_id = map_session_to_group(ipv4->ip_dst);
+    VLOG_WARN_RL(LOG_MODULE, &rl, "In false positive check trying to find the entry of group=%d", group_id);
+
+    entry = group_table_find(pkt->dp->groups, group_id);
+
+    if(entry != NULL) {
+        VLOG_WARN_RL(LOG_MODULE, &rl, "In false positive check we found the entry of group=%d", group_id);
+
+        for (i = 0; i < entry->desc->buckets_num; i++) {
+            struct ofl_bucket *bucket = entry->desc->buckets[i];
+            VLOG_WARN_RL(LOG_MODULE, &rl, "In false positive check we found the entry of port_no=%d", bucket->watch_port);
+            if (port_no == bucket->watch_port) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+/* Bloom Hashing */
+static uint32_t
+bloom_hash(uint32_t link_id, uint32_t filter_idx){
+    char * key = (char *)xmalloc(sizeof(uint32_t));
+    snprintf(key, sizeof(uint32_t), "%x", link_id);
+    return murmurhash(key, (uint32_t) strlen(key), seed[filter_idx]) % filter_size;
+}
+
+/* Cascading bloom filter logic */
+static bool
+check_link_in_filter(uint32_t link_id, void *mpls_data, size_t mpls_size, bool false_positive){
+    uint32_t link_hash, label_idx, label_offset, label, filter_idx, filter_step;
+    bool not_found = false;
+
+    filter_idx = 0;
+    filter_step  = filter_size / ((MPLS_HEADER_LEN << 3) - MPLS_LABEL_SHIFT);
+
+    if((filter_size %(((MPLS_HEADER_LEN << 3) - MPLS_LABEL_SHIFT))) != 0) {
+        filter_step++;
+    }
+//    if(mpls_size == 8) {
+//        return false;
+//    }
+    if(mpls_size == 0) {
+        return false;
+    }
+    if(false_positive){
+        not_found = true;
+        filter_idx = filter_num;
+    }
+    while ((filter_idx < filter_num) && !not_found){
+        link_hash = bloom_hash(link_id, filter_idx) ;
+
+        label_idx = link_hash / ((MPLS_HEADER_LEN << 3) - MPLS_LABEL_SHIFT);
+        label_offset = link_hash % ((MPLS_HEADER_LEN << 3) - MPLS_LABEL_SHIFT);
+
+        memcpy(&label, (uint8_t *)mpls_data + (filter_idx * filter_step * MPLS_HEADER_LEN) + (label_idx * MPLS_HEADER_LEN), MPLS_HEADER_LEN);
+        label = (ntohl(label) & MPLS_LABEL_MASK) >> MPLS_LABEL_SHIFT;
+        VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and label_idx=%d"
+                             ", label_offset=%d label=%d "
+                             "filter_idx= %d, filter_step=%d link_id= %d link_hash=%d", label_idx,
+                     label_offset,label, filter_idx, filter_step, link_id,link_hash);
+        not_found = !(label & (1 << label_offset));
+        if(!not_found) {
+            filter_idx++;
+        }
+    }
+//
+    if((filter_idx & 1) != 0) {
+        return true;
+    }
+    return false;
+}
+
+/* Modified pop_mpls to handle BLoom Filter*/
 static void
-pop_mpls(struct packet *pkt, struct ofl_action_pop_mpls *act) {
+pop_mpls(struct packet *pkt, struct ofl_action_pop_mpls *act){
+    if (pkt == NULL)
+        return;
     packet_handle_std_validate(pkt->handle_std);
     if (pkt->handle_std->proto->eth != NULL && pkt->handle_std->proto->mpls != NULL) {
         struct eth_header *eth = pkt->handle_std->proto->eth;
-        struct snap_header *snap = pkt->handle_std->proto->eth_snap;
-        struct vlan_header *vlan_last = pkt->handle_std->proto->vlan_last;
+//        struct snap_header *snap = pkt->handle_std->proto->eth_snap;
+//        struct vlan_header *vlan_last = pkt->handle_std->proto->vlan_last;
         struct mpls_header *mpls = pkt->handle_std->proto->mpls;
-        size_t move_size;
+        struct ip_header *ipv4 = pkt->handle_std->proto->ipv4;
+        struct datapath *dp = pkt->dp;
+        struct sw_port * p;
+        struct packet *pkt_clone;
+        void *mpls_data;
+        size_t  mpls_size; //move_size
+        uint32_t  port_no, link_id;
 
-        if (vlan_last != NULL) {
-            vlan_last->vlan_next_type = htons(act->ethertype);
-        } else if (snap != NULL) {
-            snap->snap_type = htons(act->ethertype);
-        } else {
-            eth->eth_type = htons(act->ethertype);
+
+        eth->eth_type = htons(act->ethertype);
+
+        mpls_size =  (uint8_t *)ipv4 - (uint8_t *)mpls;
+        mpls_data = xmalloc(mpls_size);
+        memcpy(mpls_data, mpls, mpls_size);
+
+
+        LIST_FOR_EACH(p, struct sw_port, node, &dp->port_list){
+            if ((!IS_HW_PORT(p)) && ((int)p->conf->port_no > 0) ) {
+                port_no = p->conf->port_no;
+
+//                VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and port_no=%d", port_no);
+
+                link_id = map_port_to_global_id(p->conf->port_no);
+                bool fp = is_false_positive(port_no, pkt, ipv4);
+                if(check_link_in_filter(link_id, mpls_data, mpls_size, fp)){
+                    VLOG_WARN_RL(LOG_MODULE, &rl, "In POP_MPLS and Forward on the packet link_id=%d", link_id);
+                    pkt_clone = packet_clone(pkt);
+                    packet_handle_std_validate(pkt_clone->handle_std);
+                    dp_ports_output(pkt_clone->dp, pkt_clone->buffer, port_no, 0);
+                    packet_destroy(pkt_clone);
+                }
+            }
         }
 
-        move_size = (uint8_t *)mpls - (uint8_t *)eth;
 
-        pkt->buffer->data = (uint8_t *)pkt->buffer->data + MPLS_HEADER_LEN;
-        pkt->buffer->size -= MPLS_HEADER_LEN;
+        // Don't remove the mpls label
 
-        memmove(pkt->buffer->data, eth, move_size);
+//        move_size = (uint8_t *)mpls - (uint8_t *)eth;
+//
+//        pkt->buffer->data = (uint8_t *)pkt->buffer->data + MPLS_HEADER_LEN;
+//        pkt->buffer->size -= MPLS_HEADER_LEN;
+//
+//        memmove(pkt->buffer->data, eth, move_size);
 
-        if (snap != NULL) {
-            struct eth_header *new_eth = (struct eth_header *)(pkt->buffer->data);
-            new_eth->eth_type = htons(ntohs(new_eth->eth_type) + MPLS_HEADER_LEN);
-        }
+//        if (snap != NULL) {
+//            struct eth_header *new_eth = (struct eth_header *)(pkt->buffer->data);
+//            new_eth->eth_type = htons(ntohs(new_eth->eth_type) + MPLS_HEADER_LEN);
+//        }
 
         //TODO Zoltan: revalidating might not be necessary at all cases
         pkt->handle_std->valid = false;
     } else {
-        VLOG_WARN_RL(LOG_MODULE, &rl, "Trying to execute POP_MPLS action on packet with no eth/mpls.");
+        VLOG_WARN_RL(LOG_MODULE, &rl, "Trying to execute POP_MPLS for Bloom Filter action on packet with no eth/mpls.");
     }
 }
 

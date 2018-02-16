@@ -52,9 +52,10 @@ packet_handle_std_validate(struct packet_handle_std *handle) {
     struct ofl_match_tlv * iter, *next, *f;
     uint64_t metadata = 0;
     uint64_t tunnel_id = 0;
+
     if(handle->valid)
         return;
-    
+
     HMAP_FOR_EACH_WITH_HASH(f, struct ofl_match_tlv,
                     hmap_node, hash_int(OXM_OF_METADATA,0), &handle->match.match_fields){
                     metadata = *((uint64_t*) f->value);

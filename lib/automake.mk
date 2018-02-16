@@ -35,6 +35,8 @@ lib_libopenflow_a_SOURCES = \
 	lib/list.h \
 	lib/mac-learning.c \
 	lib/mac-learning.h \
+	lib/murmurhash.h \
+	lib/murmurhash.c \
 	lib/netdev.c \
 	lib/netdev.h \
 	lib/ofp.c \
@@ -122,7 +124,7 @@ endif
 
 if HAVE_OPENSSL
 lib_libopenflow_a_SOURCES += \
-	lib/vconn-ssl.c 
+	lib/vconn-ssl.c
 nodist_lib_libopenflow_a_SOURCES = lib/dhparams.c
 lib/dhparams.c: lib/dh1024.pem lib/dh2048.pem lib/dh4096.pem
 	(echo '#include "lib/dhparams.h"' &&				\

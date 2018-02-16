@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "command-line.h"
 #include "daemon.h"
@@ -81,6 +82,12 @@ static char *local_port = "tap:";
 static void add_ports(struct datapath *dp, char *port_list);
 
 static bool use_multiple_connections = false;
+
+uint32_t filter_size = 0;
+uint32_t filter_num = 0;
+uint32_t local_to_global [DP_MAX_PORTS + 1];
+uint32_t *seed;
+
 
 /* Need to treat this more generically */
 #if defined(UDATAPATH_AS_LIB)
@@ -184,6 +191,54 @@ udatapath_cmd(int argc, char *argv[])
 }
 
 static void
+read_seed(char * file_path){
+    char line[150];
+    size_t i;
+    char * ftmp = NULL;
+    FILE * seed_file = fopen(file_path, "r");
+    seed = xmalloc(filter_num * sizeof(uint32_t));
+
+    for(i = 0; i < filter_num; i++){
+        ftmp = fgets(line, sizeof line, seed_file);
+        if(ftmp == NULL) break;
+        seed[i] = (uint32_t)strtoul(line, NULL, 10);
+    }
+}
+
+static void
+link_port_mapping(char * map){
+    char *end_str, *end_token;
+    char *inner_token;
+    uint32_t port_no, link_id, value;
+    char *pair_token ;
+
+    end_str = end_token = NULL;
+
+    pair_token = strtok_r(map, ",", &end_str);
+    port_no = link_id = -1;
+    memset(local_to_global, 0, (DP_MAX_PORTS +1) * sizeof(uint32_t));
+
+
+    while( pair_token != NULL){
+        inner_token = strtok_r(pair_token, ":", &end_token);
+        while (inner_token != NULL)
+        {
+            value = (uint32_t)strtoul(inner_token, NULL, 10);
+            if(port_no == -1) {
+                port_no = value;
+            } else if (link_id == -1) {
+                link_id = value;
+                local_to_global[port_no] = link_id;
+            }
+            inner_token = strtok_r(NULL, ":", &end_token);
+        }
+        // flush data for next usage
+        port_no = link_id = -1;
+        pair_token = strtok_r(NULL, ",", &end_str);
+    }
+}
+
+static void
 add_ports(struct datapath *dp, char *port_list)
 {
     char *port, *save_ptr;
@@ -230,6 +285,10 @@ parse_options(struct datapath *dp, int argc, char *argv[])
         {"sw-desc",     required_argument, 0, OPT_SW_DESC},
         {"dp_desc",  required_argument, 0, OPT_DP_DESC},
         {"serial_num",  required_argument, 0, OPT_SERIAL_NUM},
+        {"filter_size", required_argument, 0, 'F'},
+        {"filter_nums", required_argument, 0, 'k'},
+        {"port_mapping", required_argument, 0, 'p'},
+        {"seed file path", required_argument, 0, 's'},
         DAEMON_LONG_OPTIONS,
 #ifdef HAVE_OPENSSL
         VCONN_SSL_LONG_OPTIONS
@@ -293,6 +352,24 @@ parse_options(struct datapath *dp, int argc, char *argv[])
         case 'L':
             local_port = optarg;
             break;
+
+        case 'F': {
+            filter_size = (uint32_t)strtoul(optarg, NULL, 10);
+            break;
+        }
+        case 'k': {
+            filter_num = (uint32_t)strtoul(optarg, NULL, 10);
+            break;
+        }
+        case 'p': {
+            link_port_mapping(optarg);
+            break;
+        }
+
+        case 's': {
+            read_seed(optarg);
+            break;
+        }
 
         case OPT_NO_LOCAL_PORT:
             local_port = NULL;
@@ -360,6 +437,10 @@ usage(void)
            "                          (ID must consist of 12 hex digits)\n"
            "  -m, --multiconn         enable multiple connections to the\n"
            "                          same controller.\n"
+           "  -f                      filter size\n"
+           "  -k                      number of filters per packet\n"
+           "  -p                      PORT:LINK_ID[,PORT:LINK_ID]...\n"
+           "                          add port to global link ids mapping\n"
            "  --no-slicing            disable slicing\n"
            "\nOther options:\n"
            "  -D, --detach            run in background as daemon\n"
@@ -369,6 +450,6 @@ usage(void)
            "  -v, --verbose           set maximum verbosity level\n"
            "  -h, --help              display this help message\n"
            "  -V, --version           display version information\n",
-        ofp_rundir);
+         ofp_rundir);
     exit(EXIT_SUCCESS);
 }

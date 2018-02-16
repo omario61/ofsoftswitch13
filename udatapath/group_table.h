@@ -46,6 +46,8 @@
 
 #define GROUP_TABLE_MAX_ENTRIES 4096
 #define GROUP_TABLE_MAX_BUCKETS 8192
+// Reserved group for Multicast Sessions
+#define MULTICAST_SESSION_OFFSET 100
 
 struct datapath;
 struct packet;

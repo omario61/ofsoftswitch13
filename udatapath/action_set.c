@@ -141,7 +141,7 @@ action_set_clone(struct action_set *set) {
  * the same type in the set. The list order is based on the precedence defined
  * in the specification. */
 static void
-action_set_write_action(struct action_set *set,
+    action_set_write_action(struct action_set *set,
                         struct ofl_action_header *act) {
     struct action_set_entry *entry, *new_entry;
 
