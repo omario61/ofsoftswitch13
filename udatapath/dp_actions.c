@@ -816,7 +816,6 @@ map_session_to_group(uint32_t session){
 /*check if the link in false positive or not*/
 static bool
 is_false_positive(uint32_t port_no, struct packet *pkt, struct ip_header *ipv4){
-    //TODO check false positive checking
     struct group_entry *entry;
     size_t i;
     uint32_t group_id;
