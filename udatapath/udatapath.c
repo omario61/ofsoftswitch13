@@ -190,12 +190,22 @@ udatapath_cmd(int argc, char *argv[])
     return 0;
 }
 
+// Read seed from file passed to it
 static void
 read_seed(char * file_path){
+
     char line[150];
     size_t i;
     char * ftmp = NULL;
     FILE * seed_file = fopen(file_path, "r");
+
+    // Check for filter_num has right value and seed file is read
+    if (!seed_file || filter_num <= 0 ){
+        return;
+    }
+
+
+
     seed = xmalloc(filter_num * sizeof(uint32_t));
 
     for(i = 0; i < filter_num; i++){
@@ -205,6 +215,9 @@ read_seed(char * file_path){
     }
 }
 
+/* This function maps local port numbers to their global link ids
+ * The input is a series of comma separated tokens on the form Port:Link_id
+ * The mapping is stored into local_to_global array */
 static void
 link_port_mapping(char * map){
     char *end_str, *end_token;
@@ -441,6 +454,7 @@ usage(void)
            "  -k                      number of filters per packet\n"
            "  -p                      PORT:LINK_ID[,PORT:LINK_ID]...\n"
            "                          add port to global link ids mapping\n"
+           "  -s                      pass seed file used in CBCast algorithm\n"
            "  --no-slicing            disable slicing\n"
            "\nOther options:\n"
            "  -D, --detach            run in background as daemon\n"
